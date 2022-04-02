@@ -35,7 +35,7 @@ int iBytesRead = 0;
     return iBytesRead;
 } /* slic_flash_read() */
 
-int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, uint16_t iHeight, int iBpp, uint8_t *pPalette, SLIC_OPEN_CALLBACK *pfnOpen, SLIC_WRITE_CALLBACK *pfnWrite, uint8_t *pOut, int iOutSize) {
+int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, uint16_t iHeight, int iBpp, uint8_t *pPalette, int paletteLength, SLIC_OPEN_CALLBACK *pfnOpen, SLIC_WRITE_CALLBACK *pfnWrite, uint8_t *pOut, int iOutSize) {
     slic_header hdr;
     int rc;
     
@@ -79,15 +79,22 @@ int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, u
         hdr.colorspace = SLIC_SRGB;
     else if (iBpp == 16)
         hdr.colorspace = SLIC_RGB565;
-    else if (iBpp == 8 && pPalette == NULL)
+    else if (iBpp == 8 && (pPalette == NULL || paletteLength == 0))
         hdr.colorspace = SLIC_GRAYSCALE;
     else
         hdr.colorspace = SLIC_PALETTE;
     memcpy(pState->pOutPtr, &hdr, SLIC_HEADER_SIZE);
     pState->pOutPtr += SLIC_HEADER_SIZE;
-    if (pPalette && iBpp == 8) {
-        memcpy(pState->pOutPtr, pPalette, 768);
-        pState->pOutPtr += 768;
+    if (hdr.colorspace == SLIC_PALETTE) {
+		*(pState->pOutPtr) = (uint8_t)(paletteLength - 1);
+		pState->pOutPtr += 1;
+		while (paletteLength--) {
+			uint16_t rgb = ((pPalette[0] >> 3) << 11) | ((pPalette[1] >> 2) << 5) | (pPalette[2] >> 3);
+			pPalette += 3;
+			pState->pOutPtr[0] = (uint8_t)rgb;
+			pState->pOutPtr[1] = (uint8_t)(rgb >> 8);
+			pState->pOutPtr += 2;
+		}
     }
     // for file writing, init output data size var
     pState->iOffset = (int)(pState->pOutPtr - pState->pOutBuffer);
@@ -503,7 +510,6 @@ exit_rgb565:
 int slic_init_decode(const char *filename, SLICSTATE *pState, uint8_t *pData, int iDataSize, uint8_t *pPalette, SLIC_OPEN_CALLBACK *pfnOpen, SLIC_READ_CALLBACK *pfnRead) {
     slic_header hdr;
     int rc, i;
-    uint8_t *s;
 
     if (pState == NULL) {
         return SLIC_INVALID_PARAM;
@@ -542,10 +548,22 @@ int slic_init_decode(const char *filename, SLICSTATE *pState, uint8_t *pData, in
             return SLIC_BAD_FILE;
         if (pState->colorspace == SLIC_PALETTE) {
             // DEBUG - fix for file based
+            int paletteLength = *(pState->pInPtr) + 1;
+            pState->pInPtr += 1;
             if (pPalette) { // copy the palette if the user wants it
-                memcpy(pPalette, pState->pInPtr, 768);
+				uint8_t *pIn = pState->pInPtr, *pOut = pPalette;
+				for (int i = 0; i < paletteLength; i++, pIn += 2, pOut += 3) {
+					uint16_t rgb = pIn[0] | (pIn[1] << 8);
+					uint8_t t;
+					t = rgb >> 11;
+					pOut[0] = (t << 3) | (t >> 2); 
+					t = (rgb >> 5) & 0x3F;
+					pOut[1] = (t << 2) | (t >> 4); 
+					t = rgb & 0x1F;
+					pOut[2] = (t << 3) | (t >> 2); 
+				}
             }
-            pState->pInPtr += 768; // fixed size palette
+            pState->pInPtr += paletteLength * 2;
         }
         pState->iPixelCount = (uint32_t)pState->width * (uint32_t)pState->height;
     } else {

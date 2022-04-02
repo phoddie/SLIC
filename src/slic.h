@@ -109,7 +109,7 @@ typedef struct state_tag {
     uint8_t ucFileBuf[FILE_BUF_SIZE];
 } SLICSTATE;
 
-int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, uint16_t iHeight, int iBpp, uint8_t *pPalette, SLIC_OPEN_CALLBACK *pfnOpen, SLIC_WRITE_CALLBACK *pfnWrite, uint8_t *pOut, int iOutSize);
+int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, uint16_t iHeight, int iBpp, uint8_t *pPalette, int paletteLength, SLIC_OPEN_CALLBACK *pfnOpen, SLIC_WRITE_CALLBACK *pfnWrite, uint8_t *pOut, int iOutSize);
 int slic_encode(SLICSTATE *pState, uint8_t *pPixels, int iPixelCount);
 
 int slic_init_decode(const char *filename, SLICSTATE *pState, uint8_t *pData, int iDataSize, uint8_t *pPalette, SLIC_OPEN_CALLBACK *pfnOpen, SLIC_READ_CALLBACK *pfnRead);

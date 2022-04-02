@@ -117,7 +117,7 @@ int iHeaderSize;
 // Read a Windows BMP file into memory
 // For this demo, the only supported files are 24 or 32-bits per pixel
 //
-uint8_t * ReadBMP(const char *fname, int *width, int *height, int *bpp, unsigned char *pPal)
+uint8_t * ReadBMP(const char *fname, int *width, int *height, int *bpp, unsigned char *pPal, int *paletteLength)
 {
     int y, w, h, bits, offset;
     uint8_t *s, *d, *pTemp, *pBitmap;
@@ -193,6 +193,7 @@ uint8_t * ReadBMP(const char *fname, int *width, int *height, int *bpp, unsigned
     *width = w;
     *height = h;
     *bpp = bits;
+    *paletteLength = iColorsUsed;
     free(pTemp);
     return pBitmap;
 
@@ -236,7 +237,7 @@ int main(int argc, const char * argv[]) {
     int iDataSize;
     FILE *ohandle;
     uint8_t *pOutput;
-    int iWidth, iHeight, iBpp, iPitch;
+    int iWidth, iHeight, iBpp, iPitch, paletteLength = 0;
     uint8_t ucPalette[1024];
     uint8_t *pData, *pBitmap;
     SLICSTATE state;
@@ -271,7 +272,7 @@ int main(int argc, const char * argv[]) {
             }
           return 0;
        }
-       pBitmap = ReadBMP(argv[1], &iWidth, &iHeight, &iBpp, ucPalette);
+       pBitmap = ReadBMP(argv[1], &iWidth, &iHeight, &iBpp, ucPalette, &paletteLength);
        if (pBitmap == NULL)
        {
            fprintf(stderr, "Unable to open file: %s\n", argv[1]);
@@ -301,7 +302,7 @@ int main(int argc, const char * argv[]) {
            uint16_t *pLine = (uint16_t *)&pBitmap[iPitch*y];
            if (y==0 || y == iHeight-1) {
                for (int x=0; x<iWidth; x++) { // top+bottom red lines
-                   pLine[x] = 0xffff; // pure white
+                   pLine[x] = 0xf800; // pure red
                } // for x
            } else {
                for (int x=1; x<127; x++) pLine[x] = 0x1f; // blue background
@@ -312,7 +313,7 @@ int main(int argc, const char * argv[]) {
     }
     pOutput = malloc(iWidth * iHeight); // output buffer
     iDataSize = iWidth * iHeight;
-    rc = slic_init_encode(NULL, &state, iWidth, iHeight, iBpp, ucPalette, NULL, NULL, pOutput, iDataSize);
+    rc = slic_init_encode(NULL, &state, iWidth, iHeight, iBpp, ucPalette, paletteLength, NULL, NULL, pOutput, iDataSize);
     printf("Compressing a %d x %d x %d bitmap as SLIC data\n", iWidth, iHeight, iBpp);
     // Encode one line at a time
     for (int y=0; y<iHeight && rc == SLIC_SUCCESS; y++) {
