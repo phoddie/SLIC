@@ -329,7 +329,7 @@ int main(int argc, const char * argv[]) {
         }
         free(pOutput);
     } else {
-        printf("Something went wrong...slic_encode returned NULL\n");
+        printf("Something went wrong...slic_encode returned %d\n", (int)rc);
     }
     free(pBitmap);
     return 0;
