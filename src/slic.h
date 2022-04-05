@@ -49,6 +49,7 @@ enum {
  SLIC_GRAYSCALE,
  SLIC_PALETTE,
  SLIC_RGB565,
+ SLIC_RGB565A,
  SLIC_COLORSPACE_COUNT
 };
 
@@ -100,6 +101,7 @@ typedef struct state_tag {
     uint8_t *pInPtr; // current input pointer
     uint8_t *pInEnd;
     uint32_t curr_pixel, prev_pixel;
+    uint8_t curr_alpha, prev_alpha;
     int32_t iPixelCount;
     int32_t iOutSize; // output buffer size
     SLIC_READ_CALLBACK *pfnRead;
@@ -147,6 +149,15 @@ int slic_decode(SLICSTATE *pState, uint8_t *pOut, int iOutSize);
 #define SLIC_OP_INDEX16    0xc0
 
 #define SLIC_RGB565_HASH(C) ((((C & 0x1f) * 1) + (((C >> 5) & 0x3f) * 6) + ((C >> 11) * 12)) & 0x7)
+
+// RGB565A5 ops
+#define SLIC_OP_RUN16A      0x00
+#define SLIC_OP_RUN16A_256  0x3F
+#define SLIC_OP_RUN16A_1024 0x3E
+#define SLIC_OP_BADRUN16A   0x40
+#define SLIC_OP_A           0x60
+#define SLIC_OP_DIFF16A     0x80
+#define SLIC_OP_INDEX16A    0xc0
 
 #define SLIC_OP_MASK    0xc0 /* 11000000 */
 

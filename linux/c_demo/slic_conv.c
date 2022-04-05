@@ -313,7 +313,7 @@ int main(int argc, const char * argv[]) {
     }
     pOutput = malloc(iWidth * iHeight); // output buffer
     iDataSize = iWidth * iHeight;
-    rc = slic_init_encode(NULL, &state, iWidth, iHeight, iBpp, ucPalette, paletteLength, NULL, NULL, pOutput, iDataSize);
+    rc = slic_init_encode(NULL, &state, iWidth, iHeight, (32 == iBpp) ? 21 : iBpp, ucPalette, paletteLength, NULL, NULL, pOutput, iDataSize);
     printf("Compressing a %d x %d x %d bitmap as SLIC data\n", iWidth, iHeight, iBpp);
     // Encode one line at a time
     for (int y=0; y<iHeight && rc == SLIC_SUCCESS; y++) {

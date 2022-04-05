@@ -39,7 +39,7 @@ int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, u
     slic_header hdr;
     int rc;
     
-    if (pState == NULL || iWidth < 1 || iHeight < 1 || (iBpp != 8 && iBpp != 16 && iBpp != 24 && iBpp != 24)) {
+    if (pState == NULL || iWidth < 1 || iHeight < 1 || (iBpp != 8 && iBpp != 16 && iBpp != 24 && iBpp != 24 && iBpp != 21)) {
         return SLIC_INVALID_PARAM;
     }
     if (pfnOpen || pfnWrite || filename) {
@@ -69,6 +69,7 @@ int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, u
     pState->iOffset = 0;
     pState->prev_op = -1;
     pState->curr_pixel = pState->prev_pixel = 0xff000000;
+    pState->curr_alpha = pState->prev_alpha = 0;
     pState->iPixelCount = pState->width * pState->height;
     // encode the header in the output to start
     hdr.width = iWidth;
@@ -77,6 +78,8 @@ int slic_init_encode(const char *filename, SLICSTATE *pState, uint16_t iWidth, u
     hdr.magic = SLIC_MAGIC;
     if (iBpp >= 24)
         hdr.colorspace = SLIC_SRGB;
+	else if (iBpp == 21)
+        hdr.colorspace = SLIC_RGB565A;
     else if (iBpp == 16)
         hdr.colorspace = SLIC_RGB565;
     else if (iBpp == 8 && (pPalette == NULL || paletteLength == 0))
@@ -137,8 +140,11 @@ int slic_encode(SLICSTATE *pState, uint8_t *s, int iPixelCount) {
     if (iPixelCount > pState->iPixelCount)
         iPixelCount = pState->iPixelCount;
     pState->iPixelCount -= iPixelCount;
-    pEnd = &s[iPixelCount * iBpp];
-    pDstEnd = &pState->pOutBuffer[pState->iOutSize-5]; // leave extra bytes for multi-byte ops
+    if (pState->bpp == 21)
+		pEnd = &s[iPixelCount * 4];		// 32 bit input
+	else
+		pEnd = &s[iPixelCount * iBpp];
+    pDstEnd = &pState->pOutBuffer[pState->iOutSize-7]; // leave extra bytes for multi-byte ops
     
     if (iBpp == 1) { // grayscale or 8-bit palette image
         uint8_t px8, px8_prev, px8_next;
@@ -262,126 +268,264 @@ exit_8bit:
         return (pState->iPixelCount == 0) ? SLIC_DONE : SLIC_SUCCESS;
     } // grayscale (channels == 1)
     
-    else if (iBpp == 2) { // RGB565
-        index16 = (uint16_t *)pState->index;
-        s16 = (uint16_t *)s;
-        pEnd16 = (uint16_t *)pEnd;
-        px16 = (uint16_t)pState->curr_pixel;
-        px16_prev = (uint16_t)pState->prev_pixel;
-        if (pState->extra_pixel) {
-            pState->extra_pixel = 0;
-            px16_next = s16[0];
-            goto restart_rgb565; // try again
-        }
-        while (s16 < pEnd16) {
-            if (d >= pDstEnd) {
-                if (pState->pfnWrite) {
-                    d = dump_encoded_data(pState, d);
-                    bad_run = 0; // can't update bad_run count once written
-                } else {
-                    return SLIC_ENCODE_OVERFLOW;
-                }
-            }
-            px16 = *s16++;
-            px16_next = s16[0];
-            if (px16 == px16_prev) {
-                run++;
-                prev_op = SLIC_OP_RUN16;
-            }
-            else {
-                int index_pos, index_next;
-                while (run >= 1024) {
-                    *d++ = SLIC_OP_RUN16_1024;
-                    run -= 1024;
-                }
-                while (run >= 256) {
-                    *d++ = SLIC_OP_RUN16_256;
-                    run -= 256;
-                }
-                while (run >= 62) {
-                    *d++ = SLIC_OP_RUN16 | 61;
-                    run -= 62;
-                }
-                if (run > 0) {
-                    *d++ = SLIC_OP_RUN16 | (run - 1);
-                    run = 0;
-                }
-                if (s16 == pEnd16 && pState->iPixelCount != 0) {
-                    // We're out of input on this run, but still have more pixels before the image is finished. Stop here and let it test this pair of pixels on the next call
-                    pState->extra_pixel = 1;
-                    goto exit_rgb565; // save state and leave
-                }
-// Entry point to retry compressing the last pixel as a pair with the current
-restart_rgb565:
-                index_pos = SLIC_RGB565_HASH(px16);
-                index_next = SLIC_RGB565_HASH(px16_next);
-                if (index16[index_pos] == px16 && index16[index_next] == px16_next && s16 < pEnd16) {
-                    // store the pair as indices (if we can access the second pixel)
-                    *d++ = SLIC_OP_INDEX16 | (index_pos | (index_next <<3));
-                    s16++; // count the next pixel too
-                    px16 = px16_next; // skipped ahead 1 pixel
-                    prev_op = SLIC_OP_INDEX16;
-                } else { // try to do a difference from prev pixel
-                    int dr, dg, db;
-                    
-                    index16[index_pos] = px16;
-                    dr = (px16 >> 11) - (px16_prev >> 11);
-                    dg = ((px16 >> 5) & 0x3f) - ((px16_prev >> 5) & 0x3f);
-                    db = (px16 & 0x1f) - (px16_prev & 0x1f);
-                    if (dr > -3 && dr < 2 && dg > -3 && dg < 2 && db > -3 && db < 2) {
-                        *d++ = SLIC_OP_DIFF16 | (dr + 2) << 4 | (dg + 2) << 2 | (db + 2);
-                        prev_op = SLIC_OP_DIFF16;
-                    } else { // last resort - 'bad' pixels
-                        if (prev_op == SLIC_OP_BADRUN16 && bad_run < 64) {
-                            bad_run++; // add this bad pixel to an existing run
-                            *d++ = (uint8_t)px16;
-                            *d++ = (uint8_t)(px16 >> 8);
-                            d[-1-(bad_run*2)]++;
-                        } else { // start a new run of bad pixels
-                            *d++ = SLIC_OP_BADRUN16 | 0;
-                            *d++ = (uint8_t)px16;
-                            *d++ = (uint8_t)(px16 >> 8);
-                            bad_run = 1;
-                            prev_op = SLIC_OP_BADRUN16;
-                        }
-                    }
-                }
-            }
-            px16_prev = px16;
-        } // for each pixel
-        if (pState->iPixelCount == 0) { // wrap up any remaining repeats
-            while (run >= 1024) {
-                *d++ = SLIC_OP_RUN16_1024;
-                run -= 1024;
-            }
-            while (run >= 256) {
-                *d++ = SLIC_OP_RUN16_256;
-                run -= 256;
-            }
-            while (run >= 62) {
-                *d++ = SLIC_OP_RUN16 | 61;
-                run -= 62;
-            }
-            if (run > 0) {
-                *d++ = SLIC_OP_RUN16 | (run - 1);
-                run = 0;
-            }
-            // If using a write callback, flush the last of the data
-            if (pState->pfnWrite) {
-                (*pState->pfnWrite)(&pState->file, pState->pOutBuffer, (int)(d - pState->pOutBuffer));
-            } else  {
-                pState->iOffset = (int)(d - pState->pOutBuffer);
-            }
-        }
-        // save state
-exit_rgb565:
-        pState->curr_pixel = px16;
-        pState->prev_pixel = px16_prev;
-        pState->pOutPtr = d;
-        pState->run = run;
-        pState->bad_run = bad_run;
-        pState->prev_op = prev_op;
-        return (pState->iPixelCount == 0) ? SLIC_DONE : SLIC_SUCCESS;
+    else if (iBpp == 2) { // RGB565 or RGB565A
+		if (pState->bpp == 16) {
+			index16 = (uint16_t *)pState->index;
+			s16 = (uint16_t *)s;
+			pEnd16 = (uint16_t *)pEnd;
+			px16 = (uint16_t)pState->curr_pixel;
+			px16_prev = (uint16_t)pState->prev_pixel;
+			if (pState->extra_pixel) {
+				pState->extra_pixel = 0;
+				px16_next = s16[0];
+				goto restart_rgb565; // try again
+			}
+			while (s16 < pEnd16) {
+				if (d >= pDstEnd) {
+					if (pState->pfnWrite) {
+						d = dump_encoded_data(pState, d);
+						bad_run = 0; // can't update bad_run count once written
+					} else {
+						return SLIC_ENCODE_OVERFLOW;
+					}
+				}
+				px16 = *s16++;
+				px16_next = s16[0];
+				if (px16 == px16_prev) {
+					run++;
+					prev_op = SLIC_OP_RUN16;
+				}
+				else {
+					int index_pos, index_next;
+					while (run >= 1024) {
+						*d++ = SLIC_OP_RUN16_1024;
+						run -= 1024;
+					}
+					while (run >= 256) {
+						*d++ = SLIC_OP_RUN16_256;
+						run -= 256;
+					}
+					while (run >= 62) {
+						*d++ = SLIC_OP_RUN16 | 61;
+						run -= 62;
+					}
+					if (run > 0) {
+						*d++ = SLIC_OP_RUN16 | (run - 1);
+						run = 0;
+					}
+					if (s16 == pEnd16 && pState->iPixelCount != 0) {
+						// We're out of input on this run, but still have more pixels before the image is finished. Stop here and let it test this pair of pixels on the next call
+						pState->extra_pixel = 1;
+						goto exit_rgb565; // save state and leave
+					}
+	// Entry point to retry compressing the last pixel as a pair with the current
+	restart_rgb565:
+					index_pos = SLIC_RGB565_HASH(px16);
+					index_next = SLIC_RGB565_HASH(px16_next);
+					if (index16[index_pos] == px16 && index16[index_next] == px16_next && s16 < pEnd16) {
+						// store the pair as indices (if we can access the second pixel)
+						*d++ = SLIC_OP_INDEX16 | (index_pos | (index_next <<3));
+						s16++; // count the next pixel too
+						px16 = px16_next; // skipped ahead 1 pixel
+						prev_op = SLIC_OP_INDEX16;
+					} else { // try to do a difference from prev pixel
+						int dr, dg, db;
+						
+						index16[index_pos] = px16;
+						dr = (px16 >> 11) - (px16_prev >> 11);
+						dg = ((px16 >> 5) & 0x3f) - ((px16_prev >> 5) & 0x3f);
+						db = (px16 & 0x1f) - (px16_prev & 0x1f);
+						if (dr > -3 && dr < 2 && dg > -3 && dg < 2 && db > -3 && db < 2) {
+							*d++ = SLIC_OP_DIFF16 | (dr + 2) << 4 | (dg + 2) << 2 | (db + 2);
+							prev_op = SLIC_OP_DIFF16;
+						} else { // last resort - 'bad' pixels
+							if (prev_op == SLIC_OP_BADRUN16 && bad_run < 64) {
+								bad_run++; // add this bad pixel to an existing run
+								*d++ = (uint8_t)px16;
+								*d++ = (uint8_t)(px16 >> 8);
+								d[-1-(bad_run*2)]++;
+							} else { // start a new run of bad pixels
+								*d++ = SLIC_OP_BADRUN16 | 0;
+								*d++ = (uint8_t)px16;
+								*d++ = (uint8_t)(px16 >> 8);
+								bad_run = 1;
+								prev_op = SLIC_OP_BADRUN16;
+							}
+						}
+					}
+				}
+				px16_prev = px16;
+			} // for each pixel
+			if (pState->iPixelCount == 0) { // wrap up any remaining repeats
+				while (run >= 1024) {
+					*d++ = SLIC_OP_RUN16_1024;
+					run -= 1024;
+				}
+				while (run >= 256) {
+					*d++ = SLIC_OP_RUN16_256;
+					run -= 256;
+				}
+				while (run >= 62) {
+					*d++ = SLIC_OP_RUN16 | 61;
+					run -= 62;
+				}
+				if (run > 0) {
+					*d++ = SLIC_OP_RUN16 | (run - 1);
+					run = 0;
+				}
+				// If using a write callback, flush the last of the data
+				if (pState->pfnWrite) {
+					(*pState->pfnWrite)(&pState->file, pState->pOutBuffer, (int)(d - pState->pOutBuffer));
+				} else  {
+					pState->iOffset = (int)(d - pState->pOutBuffer);
+				}
+			}
+			// save state
+	exit_rgb565:
+			pState->curr_pixel = px16;
+			pState->prev_pixel = px16_prev;
+			pState->pOutPtr = d;
+			pState->run = run;
+			pState->bad_run = bad_run;
+			pState->prev_op = prev_op;
+			return (pState->iPixelCount == 0) ? SLIC_DONE : SLIC_SUCCESS;
+		}
+		else {		//RGB565A
+			#define RGB32toRGB565(s) (((s[0] >> 3) << 11) | ((s[1] >> 2) << 5) | (s[2] >> 3))
+			#define RGB32toA(s) (s[3] >> 3)
+			uint8_t curr_alpha = pState->curr_alpha, prev_alpha = pState->prev_alpha;
+			index16 = (uint16_t *)pState->index;
+			px16 = (uint16_t)pState->curr_pixel;
+			px16_prev = (uint16_t)pState->prev_pixel;
+			if (pState->extra_pixel) {
+				pState->extra_pixel = 0;
+				px16_next = RGB32toRGB565(s);
+				goto restart_rgb565a; // try again
+			}
+			while (s < pEnd) {
+				if (d >= pDstEnd) {
+					if (pState->pfnWrite) {
+						d = dump_encoded_data(pState, d);
+						bad_run = 0; // can't update bad_run count once written
+					} else {
+						return SLIC_ENCODE_OVERFLOW;
+					}
+				}
+				curr_alpha = RGB32toA(s);
+				if (0 != curr_alpha) {
+					px16 = RGB32toRGB565(s);
+					px16_next = RGB32toRGB565(s);
+				}
+				else
+					px16_next = px16;		// alpha is 0, color doesn't matter. reuse previous color (maximmize cache hits and runs)
+				s += 4;
+				if ((px16 == px16_prev) && (curr_alpha == prev_alpha)) {
+					run++;
+					prev_op = SLIC_OP_RUN16A;
+				}
+				else {
+					int index_pos, index_next;
+					while (run >= 1024) {
+						*d++ = SLIC_OP_RUN16A_1024;
+						run -= 1024;
+					}
+					while (run >= 256) {
+						*d++ = SLIC_OP_RUN16A_256;
+						run -= 256;
+					}
+					while (run >= 62) {
+						*d++ = SLIC_OP_RUN16A | 61;
+						run -= 62;
+					}
+					if (run > 0) {
+						*d++ = SLIC_OP_RUN16A | (run - 1);
+						run = 0;
+					}
+					if (s == pEnd && pState->iPixelCount != 0) {
+						// We're out of input on this run, but still have more pixels before the image is finished. Stop here and let it test this pair of pixels on the next call
+						pState->extra_pixel = 1;
+						goto exit_rgb565a; // save state and leave
+					}
+	// Entry point to retry compressing the last pixel as a pair with the current
+	restart_rgb565a:
+					index_pos = SLIC_RGB565_HASH(px16);
+					index_next = SLIC_RGB565_HASH(px16_next);
+					if (curr_alpha != prev_alpha) {
+						*d++ = SLIC_OP_A | curr_alpha;
+						prev_op = SLIC_OP_A;
+					}
+					if (index16[index_pos] == px16 && index16[index_next] == px16_next && (curr_alpha == RGB32toA(s)) && s < pEnd) {
+						// store the pair as indices (if we can access the second pixel)
+						*d++ = SLIC_OP_INDEX16A | (index_pos | (index_next <<3));
+						s += 4; // count the next pixel too
+						px16 = px16_next; // skipped ahead 1 pixel
+						prev_op = SLIC_OP_INDEX16A;
+					} else { // try to do a difference from prev pixel
+						int dr, dg, db;
+						
+						index16[index_pos] = px16;
+						dr = (px16 >> 11) - (px16_prev >> 11);
+						dg = ((px16 >> 5) & 0x3f) - ((px16_prev >> 5) & 0x3f);
+						db = (px16 & 0x1f) - (px16_prev & 0x1f);
+						if (dr > -3 && dr < 2 && dg > -3 && dg < 2 && db > -3 && db < 2) {
+							*d++ = SLIC_OP_DIFF16A | (dr + 2) << 4 | (dg + 2) << 2 | (db + 2);
+							prev_op = SLIC_OP_DIFF16A;
+						} else { // last resort - 'bad' pixels
+							if (prev_op == SLIC_OP_BADRUN16A && bad_run < 32) {
+								bad_run++; // add this bad pixel to an existing run
+								*d++ = (uint8_t)px16;
+								*d++ = (uint8_t)(px16 >> 8);
+								d[-1-(bad_run*2)]++;
+							} else { // start a new run of bad pixels
+								*d++ = SLIC_OP_BADRUN16A | 0;
+								*d++ = (uint8_t)px16;
+								*d++ = (uint8_t)(px16 >> 8);
+								bad_run = 1;
+								prev_op = SLIC_OP_BADRUN16A;
+							}
+						}
+					}
+				}
+				px16_prev = px16;
+				prev_alpha = curr_alpha;
+			} // for each pixel
+			if (pState->iPixelCount == 0) { // wrap up any remaining repeats
+				while (run >= 1024) {
+					*d++ = SLIC_OP_RUN16A_1024;
+					run -= 1024;
+				}
+				while (run >= 256) {
+					*d++ = SLIC_OP_RUN16A_256;
+					run -= 256;
+				}
+				while (run >= 62) {
+					*d++ = SLIC_OP_RUN16A | 61;
+					run -= 61;
+				}
+				if (run > 0) {
+					*d++ = SLIC_OP_RUN16A | (run - 1);
+					run = 0;
+				}
+				// If using a write callback, flush the last of the data
+				if (pState->pfnWrite) {
+					(*pState->pfnWrite)(&pState->file, pState->pOutBuffer, (int)(d - pState->pOutBuffer));
+				} else  {
+					pState->iOffset = (int)(d - pState->pOutBuffer);
+				}
+			}
+			// save state
+	exit_rgb565a:
+			pState->curr_pixel = px16;
+			pState->prev_pixel = px16_prev;
+			pState->curr_alpha = curr_alpha;
+			pState->prev_alpha = prev_alpha;
+
+			pState->pOutPtr = d;
+			pState->run = run;
+			pState->bad_run = bad_run;
+			pState->prev_op = prev_op;
+			return (pState->iPixelCount == 0) ? SLIC_DONE : SLIC_SUCCESS;
+		}
     } // RGB565 (channels == 2)
 
     else {
